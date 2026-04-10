@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
 import Chat from './pages/Chat';
+import Omni from './pages/Omni';
 import Models from './pages/Models';
 import System from './pages/System';
 import Settings from './pages/Settings';
@@ -11,6 +12,7 @@ export default function App() {
       <Routes>
         <Route element={<Layout />}>
           <Route path="/chat" element={<Chat />} />
+          <Route path="/omni" element={<Omni />} />
           <Route path="/models" element={<Models />} />
           <Route path="/system" element={<System />} />
           <Route path="/settings" element={<Settings />} />

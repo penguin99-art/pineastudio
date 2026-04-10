@@ -10,6 +10,7 @@ from pineastudio.schemas import BackendInfo, BackendKind, BackendType, ModelInfo
 from .backends.base import Backend, ManagedBackend
 from .backends.ollama import OllamaBackend
 from .backends.llama_server import LlamaServerBackend
+from .backends.llama_omni import LlamaOmniBackend
 from .backends.openai_compat import OpenAICompatBackend
 
 logger = logging.getLogger(__name__)
@@ -151,6 +152,8 @@ class BackendManager:
             return OllamaBackend(id=id, base_url=base_url)
         elif type == BackendType.LLAMA_SERVER.value:
             return LlamaServerBackend(id=id, base_url=base_url, **extra)
+        elif type == BackendType.OMNI.value:
+            return LlamaOmniBackend(id=id, base_url=base_url, **extra)
         elif type == BackendType.OPENAI_COMPAT.value:
             return OpenAICompatBackend(id=id, base_url=base_url, **extra)
         else:
