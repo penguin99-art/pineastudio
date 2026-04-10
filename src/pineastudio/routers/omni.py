@@ -173,6 +173,9 @@ async def omni_ws(ws: WebSocket):
             elif msg_type == "audio" and session:
                 await session.feed_audio(msg.get("data", ""))
 
+            elif msg_type == "image" and session:
+                session.feed_image(msg.get("data", ""))
+
             elif msg_type == "mute" and session:
                 session.set_muted(msg.get("muted", True))
 

@@ -60,6 +60,7 @@ class OmniSession:
         self._audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=30)
         self._tasks: list[asyncio.Task] = []
         self._seen_wavs: set[str] = set()
+        self._latest_img_path: str | None = None
 
         _make_silence_wav(self._tmp_dir / "silence.wav")
 
@@ -129,11 +130,34 @@ class OmniSession:
         except Exception as e:
             logger.warning("Failed to decode audio: %s", e)
 
+    def feed_image(self, img_b64: str) -> None:
+        """Save a base64-encoded JPEG frame and queue it for the next prefill."""
+        try:
+            raw = base64.b64decode(img_b64)
+            img_path = self._tmp_dir / "camera_frame.jpg"
+            img_path.write_bytes(raw)
+            self._latest_img_path = str(img_path)
+            logger.info("Camera frame saved (%d bytes)", len(raw))
+        except Exception as e:
+            logger.warning("Failed to decode image: %s", e)
+
     def set_muted(self, muted: bool) -> None:
         self._muted = muted
 
+    @staticmethod
+    def _pcm_rms(pcm_bytes: bytes) -> float:
+        """Compute RMS energy of 16-bit PCM to detect actual speech vs noise."""
+        if len(pcm_bytes) < 4:
+            return 0.0
+        import numpy as np
+        samples = np.frombuffer(pcm_bytes, dtype=np.int16)
+        return float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
+
     async def _loop(self) -> None:
         logger.info("Omni prefill/decode loop started (cnt=%d)", self._cnt)
+        consecutive_idle = 0
+        IDLE_SKIP = 3
+        RMS_THRESHOLD = 200  # below this, treat as silence even if audio was in queue
 
         while self._running:
             t0 = time.monotonic()
@@ -146,18 +170,41 @@ class OmniSession:
             else:
                 try:
                     pcm = await asyncio.wait_for(self._audio_queue.get(), timeout=0.5)
-                    wav_bytes = _pcm_to_wav(pcm)
-                    Path(audio_path).write_bytes(wav_bytes)
-                    is_silence = False
+                    rms = self._pcm_rms(pcm)
+                    if rms >= RMS_THRESHOLD:
+                        wav_bytes = _pcm_to_wav(pcm)
+                        Path(audio_path).write_bytes(wav_bytes)
+                        is_silence = False
+                    else:
+                        audio_path = str(self._tmp_dir / "silence.wav")
                 except asyncio.TimeoutError:
                     audio_path = str(self._tmp_dir / "silence.wav")
 
-            if self._cnt % 10 == 0 or not is_silence:
+            img_path = ""
+            if self._latest_img_path:
+                img_path = self._latest_img_path
+                self._latest_img_path = None
+
+            if is_silence and not img_path:
+                consecutive_idle += 1
+            else:
+                consecutive_idle = 0
+
+            # Skip silence-only prefills to reduce KV cache pressure
+            if consecutive_idle > 2 and consecutive_idle % IDLE_SKIP != 0:
+                elapsed = time.monotonic() - t0
+                if elapsed < 1.0:
+                    await asyncio.sleep(1.0 - elapsed)
+                continue
+
+            if self._cnt % 10 == 0 or not is_silence or img_path:
                 qsize = self._audio_queue.qsize()
-                logger.info("prefill(cnt=%d): %s qsize=%d", self._cnt, "USER_AUDIO" if not is_silence else "SILENCE", qsize)
+                logger.info("prefill(cnt=%d): %s img=%s qsize=%d idle=%d", self._cnt,
+                            "USER_AUDIO" if not is_silence else "SILENCE",
+                            "YES" if img_path else "no", qsize, consecutive_idle)
 
             try:
-                await self.backend.omni_prefill(self._cnt, audio_path)
+                await self.backend.omni_prefill(self._cnt, audio_path, img_path=img_path)
             except Exception as e:
                 logger.warning("prefill error (cnt=%d): %s", self._cnt, e)
                 await asyncio.sleep(0.5)

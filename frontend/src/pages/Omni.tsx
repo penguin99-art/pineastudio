@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Mic, MicOff, Phone, PhoneOff, Volume2, VolumeX, Settings2, Send, Keyboard } from 'lucide-react';
+import { Mic, MicOff, Phone, PhoneOff, Volume2, VolumeX, Settings2, Send, Keyboard, Camera, CameraOff } from 'lucide-react';
 
 type SessionState = 'idle' | 'starting_server' | 'initializing' | 'loading_omni' | 'ready' | 'listening' | 'speaking' | 'error';
 
@@ -45,6 +45,7 @@ export default function Omni() {
   const [micAvailable, setMicAvailable] = useState(true);
   const [textInput, setTextInput] = useState('');
   const [preset, setPreset] = useState<'zh' | 'en'>('zh');
+  const [cameraOn, setCameraOn] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -57,6 +58,10 @@ export default function Omni() {
   const isPlayingRef = useRef(false);
   const recordingStartRef = useRef<number>(0);
   const audioBytesSentRef = useRef<number>(0);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const cameraStreamRef = useRef<MediaStream | null>(null);
+  const cameraIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const isActive = state !== 'idle' && state !== 'error';
 
@@ -67,6 +72,15 @@ export default function Omni() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [transcript, currentText]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    const stream = cameraStreamRef.current;
+    if (cameraOn && video && stream) {
+      video.srcObject = stream;
+      video.play().catch(() => {});
+    }
+  }, [cameraOn]);
 
   const addSystemMsg = useCallback((text: string) => {
     setTranscript(t => [...t, { role: 'system', text, timestamp: Date.now() }]);
@@ -128,6 +142,53 @@ export default function Omni() {
 
     return ws;
   }, [addSystemMsg]);
+
+  const captureFrame = useCallback(() => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    const ws = wsRef.current;
+    if (!video || !canvas || !ws || ws.readyState !== WebSocket.OPEN) return;
+    if (video.videoWidth === 0 || video.videoHeight === 0) return;
+
+    canvas.width = Math.min(video.videoWidth, 640);
+    canvas.height = Math.round(canvas.width * video.videoHeight / video.videoWidth);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+    const b64 = dataUrl.split(',')[1];
+    ws.send(JSON.stringify({ type: 'image', data: b64 }));
+  }, []);
+
+  const startCamera = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+      });
+      cameraStreamRef.current = stream;
+      setCameraOn(true);
+      cameraIntervalRef.current = setInterval(captureFrame, 5000);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      addSystemMsg(`Camera: ${msg}`);
+    }
+  }, [captureFrame, addSystemMsg]);
+
+  const stopCamera = useCallback(() => {
+    if (cameraIntervalRef.current) {
+      clearInterval(cameraIntervalRef.current);
+      cameraIntervalRef.current = null;
+    }
+    cameraStreamRef.current?.getTracks().forEach(t => t.stop());
+    cameraStreamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+    setCameraOn(false);
+  }, []);
+
+  const toggleCamera = useCallback(() => {
+    if (cameraOn) stopCamera();
+    else startCamera();
+  }, [cameraOn, startCamera, stopCamera]);
 
   const startCall = async () => {
     if (isActive) return;
@@ -192,6 +253,7 @@ export default function Omni() {
       addSystemMsg(`Recording: ${dur}s mono WAV (${kb} KB)`);
     }
     setMicAvailable(true);
+    stopCamera();
     wsRef.current?.send(JSON.stringify({ type: 'stop' }));
     wsRef.current?.close();
     wsRef.current = null;
@@ -238,6 +300,13 @@ export default function Omni() {
       if (accumulator.length >= TARGET_SAMPLES) {
         const chunk = accumulator.slice(0, TARGET_SAMPLES);
         accumulator = accumulator.slice(TARGET_SAMPLES);
+
+        // RMS energy check — skip sending background noise
+        let sumSq = 0;
+        for (let i = 0; i < chunk.length; i++) sumSq += chunk[i] * chunk[i];
+        const rms = Math.sqrt(sumSq / chunk.length);
+        if (rms < 200) return; // ~-50dB threshold, skip silence/noise
+
         const rawBytes = new Uint8Array(chunk.buffer);
         audioBytesSentRef.current += rawBytes.length;
         const b64 = btoa(String.fromCharCode(...rawBytes));
@@ -377,15 +446,35 @@ export default function Omni() {
         )}
       </div>
 
+      {/* Hidden canvas for frame capture */}
+      <canvas ref={canvasRef} className="hidden" />
+
       {/* Conversation area */}
       <div className="flex-1 overflow-y-auto px-5 py-6">
+        {/* Camera preview */}
+        <div className={`flex justify-center mb-4 ${cameraOn ? '' : 'hidden'}`}>
+          <div className="relative rounded-xl overflow-hidden border border-zinc-700/50 shadow-lg">
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              className="w-48 h-36 object-cover bg-black"
+            />
+            <div className="absolute bottom-1.5 left-2 flex items-center gap-1 px-1.5 py-0.5 bg-black/60 rounded text-[10px] text-zinc-300">
+              <Camera size={10} className="text-red-400" />
+              <span>5s interval</span>
+            </div>
+          </div>
+        </div>
+
         {transcript.length === 0 && !currentText && (
           <div className="flex flex-col items-center justify-center h-full text-zinc-600 gap-3">
             <div className="w-16 h-16 rounded-full bg-zinc-800/80 flex items-center justify-center">
               <Mic size={28} className="text-zinc-500" />
             </div>
             <p className="text-sm">Press Start Call to begin a voice conversation</p>
-            <p className="text-xs text-zinc-700">MiniCPM-o supports real-time voice, vision, and TTS</p>
+            <p className="text-xs text-zinc-700">MiniCPM-o supports real-time voice, vision (camera), and TTS</p>
             {!window.isSecureContext && (
               <p className="text-xs text-amber-500/80 max-w-sm text-center mt-2">
                 ⚠ Page is not in a secure context. Mic requires HTTPS or localhost.
@@ -513,6 +602,18 @@ export default function Omni() {
                   {muted ? <MicOff size={18} /> : <Mic size={18} />}
                 </button>
               )}
+
+              <button
+                onClick={toggleCamera}
+                className={`p-3 rounded-full transition-colors ${
+                  cameraOn
+                    ? 'bg-blue-500/20 text-blue-400 hover:bg-blue-500/30'
+                    : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
+                }`}
+                title={cameraOn ? 'Turn off camera' : 'Turn on camera'}
+              >
+                {cameraOn ? <Camera size={18} /> : <CameraOff size={18} />}
+              </button>
 
               <button
                 onClick={endCall}
