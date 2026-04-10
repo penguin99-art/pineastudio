@@ -67,7 +67,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    from pineastudio.routers import backends, conversations, hub, models, omni, proxy, system
+    from pineastudio.routers import backends, conversations, hub, models, omni, proxy, realtime, system
 
     app.include_router(proxy.router)
     app.include_router(backends.router)
@@ -76,6 +76,7 @@ def create_app() -> FastAPI:
     app.include_router(system.router)
     app.include_router(conversations.router)
     app.include_router(omni.router)
+    app.include_router(realtime.router)
 
     _mount_frontend(app)
 

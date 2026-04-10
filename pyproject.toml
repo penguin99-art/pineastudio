@@ -16,6 +16,14 @@ dependencies = [
     "pydantic-settings",
     "psutil",
     "websockets",
+    "numpy",
+]
+
+[project.optional-dependencies]
+realtime = [
+    "faster-whisper>=1.0",
+    "edge-tts",
+    "numpy",
 ]
 
 [project.scripts]

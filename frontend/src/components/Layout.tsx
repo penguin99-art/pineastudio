@@ -1,9 +1,10 @@
 import { NavLink, Outlet } from 'react-router-dom';
-import { MessageSquare, Mic, Box, Cpu, Settings } from 'lucide-react';
+import { MessageSquare, Mic, Radio, Box, Cpu, Settings } from 'lucide-react';
 
 const NAV = [
   { to: '/chat', label: 'Chat', icon: MessageSquare },
   { to: '/omni', label: 'Omni', icon: Mic },
+  { to: '/realtime', label: 'Realtime', icon: Radio },
   { to: '/models', label: 'Models', icon: Box },
   { to: '/system', label: 'System', icon: Cpu },
   { to: '/settings', label: 'Settings', icon: Settings },
