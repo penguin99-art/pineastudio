@@ -1,0 +1,169 @@
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+from contextlib import asynccontextmanager
+
+import uvicorn
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from starlette.responses import FileResponse
+
+from pineastudio.config import load_settings, Settings
+from pineastudio.db import Database
+from pineastudio.services.backend_manager import BackendManager
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("pineastudio")
+
+_db: Database | None = None
+_manager: BackendManager | None = None
+_settings: Settings | None = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _db, _manager, _settings
+    _settings = load_settings()
+    logger.info("Data directory: %s", _settings.data_dir)
+
+    _db = Database(_settings.db_path)
+    await _db.connect()
+
+    _manager = BackendManager(_db)
+    await _manager.auto_discover(models_dir=str(_settings.models_dir))
+
+    _init_routers(_manager, _db, _settings)
+
+    backends = _manager.all_backends()
+    if backends:
+        logger.info("Active backends: %s", ", ".join(b.id for b in backends))
+    else:
+        logger.info("No backends detected. Add one via the UI or API.")
+
+    yield
+
+    await _manager.shutdown()
+    await _db.close()
+
+
+def create_app() -> FastAPI:
+    app = FastAPI(
+        title="PineaStudio",
+        version="0.1.0",
+        lifespan=lifespan,
+    )
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    from pineastudio.routers import backends, conversations, hub, models, proxy, system
+
+    app.include_router(proxy.router)
+    app.include_router(backends.router)
+    app.include_router(models.router)
+    app.include_router(hub.router)
+    app.include_router(system.router)
+    app.include_router(conversations.router)
+
+    _mount_frontend(app)
+
+    return app
+
+
+def _init_routers(manager: BackendManager, db: Database, settings: Settings) -> None:
+    from pineastudio.routers import backends, conversations, hub, models, proxy
+    proxy.init_proxy(manager)
+    backends.init_backends_router(manager)
+    models.init_models_router(manager)
+    hub.init_hub_router(db, settings)
+    conversations.init_conversations_router(db)
+
+
+def _mount_frontend(app: FastAPI) -> None:
+    """Serve the React SPA if the build directory exists."""
+    from pathlib import Path
+
+    # Check both dev and installed locations
+    candidates = [
+        Path(__file__).parent.parent.parent / "frontend" / "dist",
+        Path(__file__).parent / "static",
+    ]
+    for dist_dir in candidates:
+        if dist_dir.is_dir() and (dist_dir / "index.html").exists():
+            app.mount("/assets", StaticFiles(directory=dist_dir / "assets"), name="assets")
+
+            @app.get("/{path:path}")
+            async def serve_spa(path: str):
+                file_path = dist_dir / path
+                if file_path.is_file():
+                    return FileResponse(file_path)
+                return FileResponse(dist_dir / "index.html")
+
+            logger.info("Serving frontend from %s", dist_dir)
+            return
+
+    @app.get("/")
+    async def no_frontend():
+        return {
+            "message": "PineaStudio API is running. Frontend not built yet.",
+            "docs": "/docs",
+            "api": {
+                "backends": "/api/backends",
+                "models": "/api/models",
+                "system": "/api/system/info",
+                "hub_search": "/api/hub/search?q=qwen+gguf",
+                "openai_models": "/v1/models",
+            },
+        }
+
+
+app = create_app()
+
+
+def cli() -> None:
+    parser = argparse.ArgumentParser(description="PineaStudio")
+    parser.add_argument("--host", default=None)
+    parser.add_argument("--port", type=int, default=None)
+    parser.add_argument("--no-browser", action="store_true")
+    args = parser.parse_args()
+
+    settings = load_settings()
+    host = args.host or settings.host
+    port = args.port or settings.port
+
+    if not args.no_browser:
+        _open_browser_later(host, port)
+
+    uvicorn.run(
+        "pineastudio.main:app",
+        host=host,
+        port=port,
+        log_level="info",
+    )
+
+
+def _open_browser_later(host: str, port: int) -> None:
+    import threading
+    import time
+    import webbrowser
+
+    def _open():
+        time.sleep(1.5)
+        url = f"http://{'localhost' if host == '0.0.0.0' else host}:{port}"
+        webbrowser.open(url)
+
+    threading.Thread(target=_open, daemon=True).start()
+
+
+if __name__ == "__main__":
+    cli()

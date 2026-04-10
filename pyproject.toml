@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pineastudio"
+version = "0.1.0"
+description = "Local AI model management platform with multi-backend support"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "httpx",
+    "huggingface-hub",
+    "aiosqlite",
+    "pydantic-settings",
+    "psutil",
+    "websockets",
+]
+
+[project.scripts]
+pineastudio = "pineastudio.main:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pineastudio"]
