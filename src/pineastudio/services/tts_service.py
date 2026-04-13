@@ -24,6 +24,18 @@ class BaseTTSBackend:
         return {"available": True, "backend": "unknown"}
 
 
+_voice_zh = "zh-CN-XiaoxiaoNeural"
+_voice_en = "en-US-AriaNeural"
+
+
+def configure_voices(zh: str = "", en: str = "") -> None:
+    global _voice_zh, _voice_en
+    if zh:
+        _voice_zh = zh
+    if en:
+        _voice_en = en
+
+
 class EdgeTTSBackend(BaseTTSBackend):
     """Microsoft Edge TTS — good Chinese + English, requires internet."""
 
@@ -39,7 +51,7 @@ class EdgeTTSBackend(BaseTTSBackend):
         import edge_tts
 
         has_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in text)
-        voice = "zh-CN-XiaoxiaoNeural" if has_cjk else "en-US-AriaNeural"
+        voice = _voice_zh if has_cjk else _voice_en
 
         async def _synth():
             comm = edge_tts.Communicate(text, voice)

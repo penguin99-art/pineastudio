@@ -81,7 +81,44 @@ export interface SavedMessage {
   created_at: string;
 }
 
+export interface MemoryStatus {
+  initialized: boolean;
+  files: Record<string, { exists: boolean; size: number; modified: number | null }>;
+}
+
+export interface MemoryFile {
+  filename: string;
+  content: string;
+  exists: boolean;
+  size: number;
+}
+
 export const api = {
+  memoryStatus: () => fetchJSON<MemoryStatus>('/api/memory/status'),
+  memoryRead: (filename: string) => fetchJSON<MemoryFile>(`/api/memory/file/${filename}`),
+  memoryWrite: (filename: string, content: string) =>
+    fetchJSON<{ ok: boolean }>(`/api/memory/file/${filename}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    }),
+  memoryReinitialize: () =>
+    fetchJSON<{ ok: boolean }>('/api/memory/reinitialize', { method: 'POST' }),
+  setupFinalize: (messages: { role: string; content: string }[], model = '') =>
+    fetchJSON<{ ok: boolean; soul_size: number; user_size: number }>('/api/setup/finalize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages, model }),
+    }),
+
+  getSettings: () => fetchJSON<Record<string, unknown>>('/api/settings'),
+  updateSettings: (changes: Record<string, unknown>) =>
+    fetchJSON<Record<string, unknown>>('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ changes }),
+    }),
+
   backends: () => fetchJSON<BackendInfo[]>('/api/backends'),
   addBackend: (body: { id: string; type: string; base_url: string }) =>
     fetchJSON<BackendInfo>('/api/backends', {

@@ -15,6 +15,8 @@ from starlette.responses import FileResponse
 from pineastudio.config import load_settings, Settings
 from pineastudio.db import Database
 from pineastudio.services.backend_manager import BackendManager
+from pineastudio.services.memory_manager import MemoryManager
+from pineastudio.services.preferences import Preferences
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,21 +27,36 @@ logger = logging.getLogger("pineastudio")
 _db: Database | None = None
 _manager: BackendManager | None = None
 _settings: Settings | None = None
+_memory: MemoryManager | None = None
+_prefs: Preferences | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _db, _manager, _settings
+    global _db, _manager, _settings, _memory, _prefs
     _settings = load_settings()
     logger.info("Data directory: %s", _settings.data_dir)
 
     _db = Database(_settings.db_path)
     await _db.connect()
 
+    _prefs = Preferences(_settings.data_dir)
+    logger.info("Preferences loaded")
+
+    from pineastudio.services.tts_service import configure_voices
+    configure_voices(
+        zh=_prefs.get("tts_voice_zh", ""),
+        en=_prefs.get("tts_voice_en", ""),
+    )
+
+    _memory = MemoryManager(_settings.data_dir)
+    _memory.ensure_dirs()
+    logger.info("Memory initialized (initialized=%s)", _memory.is_initialized())
+
     _manager = BackendManager(_db)
     await _manager.auto_discover(models_dir=str(_settings.models_dir))
 
-    _init_routers(_manager, _db, _settings)
+    _init_routers(_manager, _db, _settings, _memory, _prefs)
 
     backends = _manager.all_backends()
     if backends:
@@ -67,7 +84,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    from pineastudio.routers import backends, conversations, hub, models, omni, proxy, realtime, system
+    from pineastudio.routers import backends, conversations, hub, memory, models, omni, proxy, realtime, settings as settings_router, setup, system
 
     app.include_router(proxy.router)
     app.include_router(backends.router)
@@ -77,20 +94,32 @@ def create_app() -> FastAPI:
     app.include_router(conversations.router)
     app.include_router(omni.router)
     app.include_router(realtime.router)
+    app.include_router(memory.router)
+    app.include_router(setup.router)
+    app.include_router(settings_router.router)
 
     _mount_frontend(app)
 
     return app
 
 
-def _init_routers(manager: BackendManager, db: Database, settings: Settings) -> None:
-    from pineastudio.routers import backends, conversations, hub, models, omni, proxy
-    proxy.init_proxy(manager)
+def _init_routers(manager: BackendManager, db: Database, settings: Settings,
+                   mm: MemoryManager | None = None,
+                   prefs: Preferences | None = None) -> None:
+    from pineastudio.routers import backends, conversations, hub, memory, models, omni, proxy, realtime, settings as settings_router, setup
+    proxy.init_proxy(manager, mm)
     backends.init_backends_router(manager)
     models.init_models_router(manager)
     hub.init_hub_router(db, settings)
     conversations.init_conversations_router(db)
     omni.init_omni_router(manager)
+    if mm:
+        memory.init_memory_router(mm)
+        setup.init_setup_router(mm)
+        realtime.init_realtime_memory(mm)
+    if prefs:
+        settings_router.init_settings_router(prefs)
+        realtime.init_realtime_prefs(prefs)
 
 
 def _mount_frontend(app: FastAPI) -> None:

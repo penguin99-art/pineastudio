@@ -16,6 +16,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
 from pineastudio.services.asr import ASRUnavailableError, get_asr
+from pineastudio.services.memory_manager import MemoryManager
 from pineastudio.services.tts_service import TTSUnavailableError, get_tts
 
 logger = logging.getLogger(__name__)
@@ -27,7 +28,7 @@ SENTENCE_RE = re.compile(r"(.+?[.!?。！？\n]+)(?=\s|$)", re.S)
 OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_MODEL = "gemma4:e2b"
 FALLBACK_MODELS = ["gemma4:e4b", "gemma4:26b"]
-SYSTEM_PROMPT = (
+DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful local realtime voice assistant. "
     "Always reply in the same language the user speaks. "
     "If the user speaks Chinese, reply in Simplified Chinese (简体中文), never Traditional Chinese. "
@@ -35,6 +36,59 @@ SYSTEM_PROMPT = (
 )
 MAX_HISTORY = 20
 SENTENCE_FLUSH_CHARS = 220
+
+_memory: MemoryManager | None = None
+_prefs: "Preferences | None" = None
+
+
+def init_realtime_memory(mm: MemoryManager) -> None:
+    global _memory
+    _memory = mm
+
+
+def init_realtime_prefs(prefs: "Preferences") -> None:
+    global _prefs
+    _prefs = prefs
+
+
+def _strip_backend_prefix(model_id: str) -> str:
+    """Remove 'ollama/' or similar backend prefix from model ID."""
+    if "/" in model_id:
+        return model_id.split("/", 1)[1]
+    return model_id
+
+
+def _rt_model() -> str:
+    if _prefs:
+        m = _prefs.get("realtime_model") or DEFAULT_MODEL
+        return _strip_backend_prefix(m)
+    return DEFAULT_MODEL
+
+
+def _rt_fallbacks() -> list[str]:
+    if _prefs:
+        raw = _prefs.get("realtime_fallback_models") or FALLBACK_MODELS
+        return [_strip_backend_prefix(m) for m in raw]
+    return FALLBACK_MODELS
+
+
+def _rt_ollama_host() -> str:
+    if _prefs:
+        return _prefs.get("ollama_host") or OLLAMA_HOST
+    return OLLAMA_HOST
+
+
+def _get_system_prompt(mode: str = "chat") -> str:
+    if mode == "setup":
+        from pineastudio.routers.setup import SETUP_SYSTEM_PROMPT
+        return SETUP_SYSTEM_PROMPT
+
+    if _memory and _memory.is_initialized():
+        prompt = _memory.build_system_prompt()
+        if prompt:
+            return prompt
+
+    return DEFAULT_SYSTEM_PROMPT
 
 
 def extract_sentences(buf: str, flush_chars: int = SENTENCE_FLUSH_CHARS) -> tuple[str, list[str]]:
@@ -59,6 +113,7 @@ class SessionState:
     conversation: list[dict] = field(default_factory=list)
     cancel: asyncio.Event = field(default_factory=asyncio.Event)
     active_task: asyncio.Task | None = None
+    mode: str = "chat"
 
     def cancel_current(self) -> bool:
         if self.active_task and not self.active_task.done():
@@ -123,7 +178,8 @@ async def run_turn(ws: WebSocket, state: SessionState, *,
         # 2. LLM streaming via Ollama
         await _send(ws, {"type": "status", "phase": "thinking"})
 
-        msgs: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        system_prompt = _get_system_prompt(state.mode)
+        msgs: list[dict] = [{"role": "system", "content": system_prompt}]
         msgs.extend(state.conversation[-MAX_HISTORY * 2:])
         user_msg: dict = {"role": "user", "content": user_text}
         if image_b64:
@@ -133,14 +189,16 @@ async def run_turn(ws: WebSocket, state: SessionState, *,
         t0 = time.time()
         tts_t0: float | None = None
 
-        candidates = [DEFAULT_MODEL] + [m for m in FALLBACK_MODELS if m != DEFAULT_MODEL]
+        model = _rt_model()
+        fallbacks = _rt_fallbacks()
+        candidates = [model] + [m for m in fallbacks if m != model]
         last_err: Exception | None = None
 
         for model in candidates:
             try:
                 async with httpx.AsyncClient(timeout=180) as client:
                     async with client.stream(
-                        "POST", f"{OLLAMA_HOST}/api/chat",
+                        "POST", f"{_rt_ollama_host()}/api/chat",
                         json={"model": model, "messages": msgs, "stream": True, "options": {"num_predict": 512}},
                     ) as resp:
                         resp.raise_for_status()
@@ -253,8 +311,8 @@ async def realtime_status():
     return {
         "asr": asr.status,
         "tts": tts.status,
-        "model": DEFAULT_MODEL,
-        "ollama_host": OLLAMA_HOST,
+        "model": _rt_model(),
+        "ollama_host": _rt_ollama_host(),
     }
 
 
@@ -267,7 +325,7 @@ async def realtime_ws(ws: WebSocket):
     await _send(ws, {
         "type": "ready",
         "config": {
-            "model_name": DEFAULT_MODEL,
+            "model_name": _rt_model(),
             "sample_rate": 16000,
         },
         "asr": get_asr().status,
@@ -301,6 +359,12 @@ async def realtime_ws(ws: WebSocket):
                 state.active_task = asyncio.create_task(
                     run_turn(ws, state, text_input=data.get("text", ""), image_b64=data.get("image"))
                 )
+
+            elif msg_type == "setup_start":
+                state.mode = "setup"
+                state.conversation = []
+                logger.info("Switched to setup mode [%s]", state.session_id)
+                await _send(ws, {"type": "mode", "mode": "setup"})
 
             elif msg_type == "ping":
                 await _send(ws, {"type": "pong"})
