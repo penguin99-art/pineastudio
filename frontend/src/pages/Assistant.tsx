@@ -382,19 +382,25 @@ export default function Assistant() {
   };
 
   // ── Conversation management ──
+  const triggerSummarize = useCallback((convId: string | null) => {
+    if (convId) api.summarizeConversation(convId).catch(() => {});
+  }, []);
+
   const loadConversation = useCallback(async (id: string) => {
+    triggerSummarize(activeConvId);
     try {
       const detail = await api.getConversation(id);
       setActiveConvId(id);
       setMessages(detail.messages.map((m: SavedMessage) => ({ role: m.role as 'user' | 'assistant', content: m.content })));
     } catch {}
-  }, []);
+  }, [activeConvId, triggerSummarize]);
 
   const startNewConversation = useCallback(() => {
+    triggerSummarize(activeConvId);
     setActiveConvId(null);
     setMessages([]);
     setError('');
-  }, []);
+  }, [activeConvId, triggerSummarize]);
 
   const deleteConversation = useCallback(async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();

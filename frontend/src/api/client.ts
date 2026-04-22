@@ -81,6 +81,61 @@ export interface SavedMessage {
   created_at: string;
 }
 
+export interface VideoModel {
+  id: string;
+  name: string;
+  pipeline: string;
+  params_b: number;
+  vram_gb_min: number;
+  default_steps: number;
+  default_frames: number;
+  default_size: [number, number];
+  default_fps: number;
+  default_guidance: number;
+  path: string;
+  size_gb: number;
+  loaded: boolean;
+}
+
+export interface VideoJob {
+  id: string;
+  model_id: string;
+  prompt: string;
+  negative_prompt: string;
+  width: number;
+  height: number;
+  num_frames: number;
+  num_inference_steps: number;
+  guidance_scale: number;
+  fps: number;
+  seed: number;
+  status: 'queued' | 'loading' | 'running' | 'done' | 'error';
+  progress: number;
+  progress_step: number;
+  progress_total: number;
+  output_path: string | null;
+  output_size: number;
+  error: string | null;
+  created_at: number;
+  started_at: number | null;
+  finished_at: number | null;
+  elapsed_load_s: number | null;
+  elapsed_gen_s: number | null;
+}
+
+export interface VideoGenerateRequest {
+  model_id: string;
+  prompt: string;
+  negative_prompt?: string;
+  width?: number;
+  height?: number;
+  num_frames?: number;
+  num_inference_steps?: number;
+  guidance_scale?: number;
+  fps?: number;
+  seed?: number;
+}
+
 export interface MemoryStatus {
   initialized: boolean;
   files: Record<string, { exists: boolean; size: number; modified: number | null }>;
@@ -165,6 +220,26 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ role, content, reasoning, model }),
     }),
+  summarizeConversation: (convId: string) =>
+    fetchJSON<{ ok: boolean }>(`/api/conversations/${convId}/summarize`, { method: 'POST' }),
+
+  videoModels: () =>
+    fetchJSON<{ models: VideoModel[]; loaded: string[] }>('/api/video/models'),
+  videoGenerate: (body: VideoGenerateRequest) =>
+    fetchJSON<VideoJob>('/api/video/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  videoJobs: () => fetchJSON<{ jobs: VideoJob[] }>('/api/video/jobs'),
+  videoJob: (id: string) => fetchJSON<VideoJob>(`/api/video/jobs/${id}`),
+  videoDelete: (id: string) =>
+    fetchJSON<{ ok: boolean }>(`/api/video/jobs/${id}`, { method: 'DELETE' }),
+  videoCancel: (id: string) =>
+    fetchJSON<{ ok: boolean }>(`/api/video/jobs/${id}/cancel`, { method: 'POST' }),
+  videoUnload: (id: string) =>
+    fetchJSON<{ ok: boolean }>(`/api/video/unload/${id}`, { method: 'POST' }),
+  videoFileUrl: (id: string) => `/api/video/jobs/${id}/file`,
 };
 
 export interface ChatChunk {

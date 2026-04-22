@@ -71,6 +71,20 @@ class MemoryManager:
 
         return "\n\n---\n\n".join(parts)
 
+    def append_daily(self, text: str) -> None:
+        """Append text to today's daily log."""
+        self.ensure_dirs()
+        today = self.daily_dir / f"{date.today()}.md"
+        existing = today.read_text(encoding="utf-8") if today.exists() else ""
+        if existing and not existing.endswith("\n"):
+            existing += "\n"
+        today.write_text(existing + text.strip() + "\n", encoding="utf-8")
+        logger.info("Appended to daily/%s.md (%d chars)", date.today(), len(text))
+
+    def read_daily(self, date_str: str) -> str:
+        path = self.daily_dir / f"{date_str}.md"
+        return path.read_text(encoding="utf-8") if path.exists() else ""
+
     def backup_and_reset(self) -> None:
         """Backup current memory files and delete SOUL.md to trigger re-initialization."""
         import shutil

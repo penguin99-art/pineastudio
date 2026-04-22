@@ -7,6 +7,7 @@ import Setup from './pages/Setup';
 import Chat from './pages/Chat';
 import Omni from './pages/Omni';
 import Realtime from './pages/Realtime';
+import Video from './pages/Video';
 import Models from './pages/Models';
 import System from './pages/System';
 import Settings from './pages/Settings';
@@ -54,6 +55,7 @@ export default function App() {
             {/* Showcase */}
             <Route path="/showcase/omni" element={<Omni />} />
             <Route path="/showcase/realtime" element={<Realtime />} />
+            <Route path="/showcase/video" element={<Video />} />
 
             {/* Studio */}
             <Route path="/studio/chat" element={<Chat />} />

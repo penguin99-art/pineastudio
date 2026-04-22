@@ -17,6 +17,7 @@ from pineastudio.db import Database
 from pineastudio.services.backend_manager import BackendManager
 from pineastudio.services.memory_manager import MemoryManager
 from pineastudio.services.preferences import Preferences
+from pineastudio.services import video_gen
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,6 +54,9 @@ async def lifespan(app: FastAPI):
     _memory.ensure_dirs()
     logger.info("Memory initialized (initialized=%s)", _memory.is_initialized())
 
+    video_gen.init_video_service(_settings.data_dir)
+    logger.info("Video service initialized (output: %s/videos)", _settings.data_dir)
+
     _manager = BackendManager(_db)
     await _manager.auto_discover(models_dir=str(_settings.models_dir))
 
@@ -84,7 +88,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    from pineastudio.routers import backends, conversations, hub, memory, models, omni, proxy, realtime, settings as settings_router, setup, system
+    from pineastudio.routers import backends, conversations, hub, memory, models, omni, proxy, realtime, settings as settings_router, setup, system, video
 
     app.include_router(proxy.router)
     app.include_router(backends.router)
@@ -97,6 +101,7 @@ def create_app() -> FastAPI:
     app.include_router(memory.router)
     app.include_router(setup.router)
     app.include_router(settings_router.router)
+    app.include_router(video.router)
 
     _mount_frontend(app)
 
@@ -111,7 +116,13 @@ def _init_routers(manager: BackendManager, db: Database, settings: Settings,
     backends.init_backends_router(manager)
     models.init_models_router(manager)
     hub.init_hub_router(db, settings)
-    conversations.init_conversations_router(db)
+
+    ollama_host = (prefs.get("ollama_host") if prefs else None) or "http://localhost:11434"
+    summarize_model = (prefs.get("realtime_model") if prefs else None) or "gemma4:e2b"
+    if "/" in summarize_model:
+        summarize_model = summarize_model.split("/", 1)[1]
+    conversations.init_conversations_router(db, mm, ollama_host, summarize_model)
+
     omni.init_omni_router(manager)
     if mm:
         memory.init_memory_router(mm)

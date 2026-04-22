@@ -1262,80 +1262,142 @@ AI 带着名字和人格开始工作。
 
 ---
 
-## 8. 近期行动计划 (Next 2 Weeks)
+## 8. Phase 1 回顾 — 已完成 (2026-04-13)
 
 ```
-目标：两周后，首次打开 PineaStudio 的体验是：
-  全屏仪式 → 语音对话 → AI 有了名字 →
-  跳转助理主界面 → Pine 在等你 → 之后每次对话都记得你
-
-Week 1: 记忆骨架 (M1-M4) + UI 框架 (U1-U3)
-─────────────────────────────────────────────
-Day 1:  M1 — memory/ 目录 + 三文件结构
-        memory_manager.py: read/write/exists 基础操作
-
-Day 2:  M2 — prompt_builder + M3 — memory tool
-        冻结快照注入 + add/replace/remove
-
-Day 3:  M4 — 对话接入记忆
-        /v1/chat/completions 代理前注入记忆 system prompt
-        验证: AI 能读到手动写的 SOUL.md 信息
-
-Day 4:  U2 — 三层导航 Layout
-        助理(主 Tab) / 展示台(下拉) / 工作台(下拉)
-        U3 — 页面迁移: 路由从 /chat → /studio/chat 等
-
-Day 5:  U1 — Assistant.tsx 助理主界面 (文字模式)
-        文字对话 + 记忆注入 + 光球头像
-        默认模型从 Settings 获取，不暴露
-
-Day 6:  U4 — ConversationList 对话历史面板
-        左侧面板，按日期分组
-
-Day 7:  U5 — 助理语音内嵌
-        🎤 按钮 → 按住说话 → 复用 /ws/realtime 管线
-        文字 + 语音同一界面切换
-
-Week 2: 诞生仪式 (S1-S8) + 深化 (M5-M8)
-─────────────────────────────────────────────
-Day 1:  S1 — /setup 页面骨架
-        全屏沉浸布局 + 深色渐变 + 光球 + 进度圆点
-
-Day 2:  S2 — 声波可视化 + S3 — Realtime 管线对接
-        WebAudio API + mode=setup
-
-Day 3:  S4 — 引导 prompt + 试衣间
-        LLM 自适应引导 + 风格演示
-
-Day 4:  S5+S6 — 字幕 + 文字降级
-        + M8 — finalize_setup()
-        对话结束 → 生成 SOUL.md + USER.md → 跳转助理主界面
-
-Day 5:  M5+M6 — Realtime + Omni 接入记忆
-        语音对话也带人格和记忆
-
-Day 6:  M7 — 对话结束异步摘要 + U6 — Settings 扩展
-        对话摘要 + 默认模型配置 + 记忆管理
-
-Day 7:  端到端验证
-        完整流程: 首次打开 → 仪式 → 助理主界面 → 对话 → 记忆生长
-        清除 memory/ → 重新走一遍
-        确认助理主界面 (文字+语音) 都带人格
+✅ Week 1-2 计划全部完成：
+  M1  memory/ 目录 + 三文件 (SOUL/USER/MEMORY)
+  M2  prompt_builder (冻结快照注入 system prompt)
+  M3  MemoryTool (add/replace/remove, char limits)
+  M4  /v1/chat/completions 记忆注入
+  M5  Realtime WebSocket 记忆注入
+  U1  Assistant.tsx (文字+语音双模态)
+  U2  三层导航 Layout
+  U3  路由迁移
+  U4  ConversationList + 删除
+  U5  助理语音模式 (VAD + WebSocket)
+  S1-S8  诞生仪式完整流程 (语音交互)
+  M8  finalize_setup (LLM 提取 → SOUL.md + USER.md)
+  U6  Settings 页面 (模型/TTS/ASR 配置)
+  Memory.tsx 记忆管理页面
 ```
+
+### Phase 1 的核心问题
+
+**记忆是"只读"的。** LLM 能读到 SOUL/USER/MEMORY（通过 prompt 注入），
+但它从不在对话中更新记忆。MemoryTool 写好了，却没有接入对话循环。
+
+这意味着：
+- 助理永远停留在诞生仪式时的认知
+- 聊了100次，它也不会记住你新提到的任何事
+- daily/ 目录永远是空的
+- 记忆不会"生长"
 
 ---
 
-## 9. 参考项目速查
+## 9. Phase 2 — 让记忆活起来
+
+> 更新: 2026-04-13 — 基于代码审计 + 2026 行业趋势分析
+
+### 9.0 行业参考 (2026)
+
+| 项目 | 核心机制 | 借鉴点 |
+|------|---------|--------|
+| Fera (Claude Agent SDK) | Heartbeat 每30分钟醒来；Dream Cycle 每晚记忆综合 | 主动性 + 记忆生命周期 |
+| Supermemory (21K stars) | 自动事实提取 + 用户画像 + 混合检索 | 事实抽取准确率高 |
+| mnemory (MCP) | 两层记忆（可搜索摘要 + 详细 artifacts） | 轻量 + 矛盾解决 |
+| Memori (论文) | 语义三元组，81.95% 准确率，67% token 节省 | 结构化压缩 |
+| Ollama tool calling | 原生支持 function calling + 自动循环 | 本地 LLM 直接可用 |
+| Hermes Agent | MEMORY.md + USER.md + memory tool | 已借鉴，但未接入对话 |
+| PenguinAI | morning/chat/evening 三模式 | 认知节律 |
+
+**关键发现：2026 年记忆系统的标准是三层：Buffer → Summarization → Long-term Recall。
+PineaStudio 目前只有第一层（buffer/prompt injection），缺失后两层。**
+
+### 9.1 P0 — Tool Call 循环（让 LLM 自主管记忆）
+
+**问题：** proxy.py 的 `/v1/chat/completions` 只是透传请求到 Ollama，不处理 tool_calls。
+LLM 永远无法调用 memory tool。
+
+**方案：** 在 proxy 中实现 tool call loop：
+
+```
+用户消息 → 注入记忆 prompt + tool schema
+         → 发到 Ollama
+         → 检查响应: 有 tool_calls?
+           ├─ 是 → 执行 MemoryTool → 结果塞回 messages → 再调 Ollama
+           └─ 否 → 直接流式返回给前端
+```
+
+技术细节：
+- Ollama `/api/chat` 原生支持 tools 参数（Qwen 2.5 / Llama 3.1+ 都支持）
+- 流式场景：先用非流式请求让 LLM 决定是否调用 tool，
+  如果不调 tool，重新用流式请求获取最终回复
+- MemoryTool.TOOL_SCHEMA 已有 OpenAI 格式定义，直接复用
+- 最多循环 3 次 tool call（防无限循环）
+
+### 9.2 P1 — 对话摘要 + Daily 日志
+
+**问题：** 对话结束后，内容完全消失。daily/ 目录永远空的。
+
+**方案：** 对话结束时异步摘要：
+
+```
+对话结束（前端离开/新建对话）
+→ 后端收到信号
+→ 用 LLM 生成对话摘要（~200 tokens）
+→ 追加到 daily/YYYY-MM-DD.md
+→ 同时更新 SQLite memory_episodes 表
+```
+
+触发时机：
+- 文字对话：前端切换/新建对话时通知后端
+- 语音对话：WebSocket 断开时自动触发
+
+摘要 prompt：
+```
+请用 2-3 句话总结这段对话的关键信息。
+重点记录：用户提到的事实、偏好、计划、情感。
+忽略：闲聊、问候、技术细节。
+```
+
+### 9.3 P2 — Realtime 语音也接入 Tool Call
+
+**问题：** realtime.py 的 `run_turn` 直接调 Ollama `/api/chat`，
+不传 tools 参数，语音对话中 LLM 也无法更新记忆。
+
+**方案：** 在 `run_turn` 中加入 tool call 检查，
+语音场景只执行 memory tool（不做其他 tool），
+tool 结果塞回对话后再次请求 LLM 获取文本回复 → TTS。
+
+### 9.4 P3 — Heartbeat + Dream Cycle（未来）
+
+参照 Fera 模式，但适配边缘设备：
+- Heartbeat: 每小时检查 daily/ 日志长度，过长则压缩
+- Dream Cycle: 每天凌晨（或空闲时）综合当日 daily → 更新 MEMORY.md
+- 实现方式: FastAPI BackgroundTask 或 APScheduler
+
+### 9.5 P4 — 生图 stable-diffusion.cpp（未来）
+
+- 作为助理的"画画"能力
+- 通过 tool call 触发（LLM 决定何时画图）
+
+---
+
+## 10. 参考项目速查
 
 | 项目 | 路径/链接 | 核心借鉴 |
 |------|---------|---------|
 | Hermes Agent | github.com/NousResearch/hermes-agent | MEMORY.md + USER.md 双文件记忆；memory tool (add/replace/remove)；SOUL.md 人格；FTS5 会话搜索；冻结快照注入 |
 | PenguinAI | /home/pineapi/penguin/penguinai | morning/chat/evening 三模式；knowledge/ 编译层；两级压缩 (micro + full)；Tool Registry + Hook Pipeline；"模型当指挥官" |
 | Vision-Agent | /home/pineapi/penguin/Vision-Agent | 分级认知 (hourly/daily/weekly)；SCENE.md 有界摘要；事件溯源 (JSONL)；先规则后 LLM |
+| Fera | fera.run | Heartbeat (30min)；Dream Cycle (每晚记忆综合)；Markdown + sqlite-vec |
+| Supermemory | github.com/supermemoryai/supermemory | 自动事实提取；混合检索；多模态提取 |
+| mnemory | github.com/fpytloun/mnemory | 两层记忆；矛盾解决；零配置 |
 
 ---
 
-## 10. 愿景
+## 11. 愿景
 
 ```
 第一次：
@@ -1350,14 +1412,8 @@ Day 7:  端到端验证
 之后的每一天：
   打开 PineaStudio → Pine 的光球在那里
   打字或按住麦克风说话
-  "早上好！今天周三，你有下午 2 点的会议。
-   外面 22 度，适合穿衬衫。
-   对了，昨天你提到想学 Rust，
-   我找到了一个不错的入门教程，要现在看看吗？"
-
-  偶尔切到展示台试试 Omni 的摄像头能力
-  偶尔切到工作台下载新模型或看看 GPU 状态
-  但 95% 的时间，你在助理主界面和 Pine 聊天
+  聊天中 Pine 悄悄记住了你的偏好、习惯、项目
+  晚上 Pine 会整理今天的对话，更新记忆
 
 一个月后：
   Pine 记得你的生日、你的项目、你的思考方式。
@@ -1365,11 +1421,226 @@ Day 7:  端到端验证
   而是一个认识你的伙伴。
 ```
 
-PineaStudio 不是又一个 AI 工具面板。
-它是你桌上的一个小伙伴。
-打开它，你看到的不是模型列表，而是 Pine 在等你。
-它的第一句话不是"请选择模型"，而是"你希望我叫什么名字？"
+---
+
+## 12. 从 "应用" 到 "操作系统" — Agent Computer 思考
+
+> 更新: 2026-04-13 — 当设备成为 Agent Computer 时，OS 层该是什么样的？
+
+### 12.0 问题
+
+PineaStudio 跑在 NVIDIA DGX Spark (GB10) 上。这台机器有 128GB 统一内存、
+Blackwell GPU、20 核 Grace CPU，底层是 DGX OS (Linux)。
+
+当前 PineaStudio 是这台机器上的**一个应用程序** — 一个 FastAPI 进程 +
+一个 React SPA。用户通过浏览器访问它，和传统 Web App 没有本质区别。
+
+但如果我们重新思考：这台机器的**存在意义**就是做你的私人 AI 伙伴——
+那它不应该是 "Linux 桌面上跑了一个 AI 应用"，
+而应该是 **"一台专门的 AI 设备，它的整个 OS 层就是围绕伙伴关系设计的"**。
+
+这就是 Agent Computer 和传统计算机的本质区别。
+
+### 12.1 传统 OS vs Agent OS — 范式对比
+
+```
+传统操作系统 (Linux/macOS/Windows)
+─────────────────────────────────
+  用户界面:   GUI (窗口、菜单、鼠标)
+  核心抽象:   文件、进程、窗口
+  交互模式:   用户 → 找到应用 → 打开 → 操作 → 关闭
+  记忆:       文件系统 (用户手动管理)
+  调度:       进程调度 (CPU 时间片)
+  安全:       文件权限、用户账户
+  始终在线:   否 (用户主动启动应用)
+
+Agent OS (AI 伙伴设备)
+──────────────────────
+  用户界面:   语音 + 极简视觉 (光球/状态灯)
+  核心抽象:   对话、记忆、意图、技能
+  交互模式:   用户 ← → 伙伴 (持续关系，不是会话)
+  记忆:       认知记忆系统 (AI 自主管理)
+  调度:       注意力调度 (什么值得主动告诉用户)
+  安全:       意图验证 (行为前确认)
+  始终在线:   是 (Heartbeat + Contemplation Loop)
+```
+
+**核心洞察：传统 OS 的核心是"管理硬件资源给应用用"。
+Agent OS 的核心是"管理认知资源给伙伴关系用"。**
+
+### 12.2 Agent OS 的五层架构
+
+借鉴 2026 年学术界 (AgentOS 论文 arXiv:2602.20934) 和产业界
+(ArgentOS, oikOS, Perplexity PPC) 的设计，PineaStudio 作为 Agent OS
+需要这五层：
+
+```
+┌──────────────────────────────────────────────────────┐
+│ 5. 交互层 (Interaction Layer)                         │
+│    语音 / 视觉反馈 / 触摸 / 多通道 (Web/手机/音箱)      │
+├──────────────────────────────────────────────────────┤
+│ 4. 代理层 (Agent Layer)                               │
+│    技能注册表 / Tool Router / MCP 连接器                │
+│    → 助理可以"做事"：发消息、查天气、控制设备、生图...     │
+├──────────────────────────────────────────────────────┤
+│ 3. 认知层 (Cognitive Layer)                           │
+│    记忆管理 / 注意力调度 / Contemplation Loop           │
+│    → 助理的"大脑"：记住、思考、主动行动                   │
+├──────────────────────────────────────────────────────┤
+│ 2. 推理层 (Inference Layer)                           │
+│    LLM 路由 / 模型管理 / Context Window 管理            │
+│    → 助理的"思考引擎"：选择合适的模型处理不同任务          │
+├──────────────────────────────────────────────────────┤
+│ 1. 硬件抽象层 (HAL)                                   │
+│    GPU / 内存 / 麦克风阵列 / 扬声器 / 摄像头 / 网络       │
+│    → 感知和输出的物理基础                               │
+└──────────────────────────────────────────────────────┘
+```
+
+### 12.3 PineaStudio 当前位置 vs Agent OS 目标
+
+| 层 | Agent OS 需要 | PineaStudio 现状 | 差距 |
+|----|-------------|-----------------|------|
+| **5. 交互** | 语音为主，极简视觉，多通道 | ✅ 语音+文字+光球 | Web 浏览器是唯一入口 |
+| **4. 代理** | 技能注册表，可扩展 tools | △ memory tool 仅一个 | 没有外部世界连接 |
+| **3. 认知** | 记忆+注意力+主动思考 | △ 记忆文件+tool call+摘要 | 无 Heartbeat/Contemplation |
+| **2. 推理** | 智能模型路由，资源感知 | ✅ 多后端路由 | 无 VRAM 感知调度 |
+| **1. 硬件** | 传感器抽象 | △ ASR/TTS/Camera | 无唤醒词/环境音检测 |
+
+### 12.4 交互范式的深度思考
+
+#### 从"打开应用"到"它一直在那里"
+
+传统交互：
+```
+用户 → 打开浏览器 → 输入网址 → 等待加载 → 打字/说话 → 等待回复 → 关闭
+```
+
+Agent Computer 交互：
+```
+设备始终在线
+  │
+  ├─ 被动等待 ← 用户说"嘿Pine" → 开始对话
+  ├─ 主动提醒 → "你10分钟后有个会议"
+  ├─ 环境感知 → 检测到你回家 → "欢迎回来，今天怎么样？"
+  └─ 后台思考 → 综合今天的对话 → 更新记忆 → 准备明天的建议
+```
+
+#### 失败案例的教训
+
+2024-2025 年的 AI 硬件失败（Rabbit R1、Humane AI Pin）给了关键教训：
+
+| 失败原因 | 教训 | PineaStudio 的对策 |
+|---------|------|-------------------|
+| 纯云端推理 | 必须本地优先 | ✅ 全部本地运行 |
+| 电池不行 | 别做移动设备 | ✅ 桌面设备，持续供电 |
+| 语音识别太差 | 要有文字降级 | ✅ 语音+文字双模态 |
+| 功能太少 | 不是新设备，是新范式 | 需要扩展技能系统 |
+| 新奇消退后无用 | 必须解决真实问题 | 记忆+个性化是护城河 |
+
+#### PineaStudio 的交互设计原则
+
+```
+1. 语音优先，屏幕辅助
+   主要用语音交互。屏幕用来显示光球状态、文字记录、
+   偶尔的图片/代码。不需要复杂 GUI。
+
+2. 始终可达
+   不需要"打开"。设备就在桌上，随时可以说话。
+   Web UI 是管理/配置入口，不是主要交互界面。
+
+3. 主动而非被动
+   助理会主动说话——提醒、问候、分享发现。
+   但不会烦人——通过学习用户习惯调整频率。
+
+4. 记忆是连续的
+   不存在"新对话"的概念。所有对话都是同一段关系的延续。
+   每次对话结束不是"关闭"，而是"暂时安静"。
+
+5. 隐私是底线
+   所有数据在本地。没有云端回传。没有遥测。
+   用户可以随时查看和删除所有记忆。
+```
+
+### 12.5 从交互设计推导 PineaStudio 的下一步
+
+基于以上思考，PineaStudio 要从"AI Web App"演进为"Agent OS"，
+核心不是重写 Linux，而是在 Linux 之上构建一个**认知层+代理层**：
+
+```
+Phase 3 路线图（Agent OS 化）
+────────────────────────────
+
+P5. Contemplation Loop（沉思循环）
+    ├─ Heartbeat: 每小时醒来，检查 daily/、扫描环境
+    ├─ Dream Cycle: 每晚综合当天记忆 → 更新 MEMORY.md
+    └─ Morning Brief: 每天早上准备问候和摘要
+
+P6. 技能系统（Skills/Tools 扩展）
+    ├─ Tool Registry: 注册/发现/调用
+    ├─ MCP 连接器: 连接外部服务 (日历、天气、智能家居...)
+    └─ 代码沙箱: Python 执行环境
+
+P7. 多通道入出
+    ├─ 唤醒词检测 (本地 VAD → 关键词)
+    ├─ 长连接模式 (不需要每次开网页)
+    └─ 移动端推送 (Telegram/微信 bot)
+
+P8. 环境感知
+    ├─ 摄像头：看到桌面/房间 (已有 MiniCPM-o)
+    ├─ 时间感知：知道现在几点、星期几、什么季节
+    └─ 网络感知：检测到新设备、网络变化
+```
+
+### 12.6 oikOS 启示："Intelligence is cheap. Context is expensive."
+
+oikOS 的核心理念：**智能是廉价的，上下文是昂贵的**。
+
+这意味着 PineaStudio 的竞争力不在于用最大的模型，
+而在于**给模型最好的上下文**：
+
+- 知道你是谁（USER.md）
+- 知道自己是谁（SOUL.md）
+- 记得之前的对话（MEMORY.md + daily/）
+- 知道你现在的状态（时间、环境、日程）
+- 能连接你的数字世界（日历、邮件、文件）
+
+**同样的 7B 模型 + 完美的上下文 >>> 70B 模型 + 零上下文**
+
+### 12.7 重新定义 PineaStudio
+
+```
+PineaStudio 不是一个 "AI 应用程序"。
+
+PineaStudio 是一个 "AI 伙伴操作系统"：
+  - 它的 "内核" 是 LLM 推理引擎
+  - 它的 "文件系统" 是记忆系统
+  - 它的 "进程调度" 是注意力和优先级管理
+  - 它的 "系统调用" 是 Tool/MCP 接口
+  - 它的 "用户界面" 是语音 + 光球
+  - 它的 "启动过程" 是诞生仪式
+
+它运行在 Linux 之上，但它面向用户的一切都不是 Linux。
+用户看到的是 Pine —— 一个认识你的伙伴。
+
+传统 OS 启动后显示桌面。
+PineaStudio 启动后说 "早上好"。
+```
 
 ---
 
-*更新: 2026-04-13 — UI 三层重构 + 助理主界面设计*
+## 13. 参考系统更新
+
+| 系统 | 类型 | 核心架构 | 对 PineaStudio 的启示 |
+|------|------|---------|---------------------|
+| ArgentOS | 开源 Agent OS | Agent Kernel + Contemplation Loop + 62 连接器 + SOUL.md | 沉思循环 + 技能系统 |
+| oikOS | 主权 Agent OS | 分层记忆 (Identity/Knowledge) + 42 MCP tools + 本地推理 | "上下文 > 模型大小" |
+| Perplexity PPC | 商业 Always-on | Mac Mini 常驻 + 文件/邮件/日历访问 + 主动行动 | 环境融入 + 主动性 |
+| Fera | 开源 Agent | Heartbeat + Dream Cycle + Claude SDK | 认知节律 |
+| AgentOS (论文) | 学术框架 | LLM=推理内核 + 上下文=可寻址语义空间 + OS 调度 | 理论框架 |
+| Rabbit R1 / Humane Pin | 失败硬件 | 纯云端 + 电池差 + 语音差 | 反面教材 |
+| iyO Wand | 新兴硬件 | 无屏 + 8 mic + 语音优先 + 本地 | 交互形态参考 |
+
+---
+
+*更新: 2026-04-13 — Agent Computer / OS 层思考 + Phase 3 路线图*

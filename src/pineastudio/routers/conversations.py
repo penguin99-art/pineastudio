@@ -1,20 +1,35 @@
 from __future__ import annotations
 
+import logging
 import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
 from pineastudio.db import Database
+from pineastudio.services.memory_manager import MemoryManager
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
 _db: Database | None = None
+_memory: MemoryManager | None = None
+_ollama_host: str = "http://localhost:11434"
+_summarize_model: str = "gemma4:e2b"
 
 
-def init_conversations_router(db: Database) -> None:
-    global _db
+def init_conversations_router(
+    db: Database,
+    memory: MemoryManager | None = None,
+    ollama_host: str = "http://localhost:11434",
+    summarize_model: str = "gemma4:e2b",
+) -> None:
+    global _db, _memory, _ollama_host, _summarize_model
     _db = db
+    _memory = memory
+    _ollama_host = ollama_host
+    _summarize_model = summarize_model
 
 
 class ConversationCreate(BaseModel):
@@ -86,3 +101,31 @@ async def add_message(conv_id: str, body: MessageCreate):
         raise HTTPException(404, "Conversation not found")
     msg_id = await _db.add_message(conv_id, body.role, body.content, body.reasoning, body.model)
     return {"id": msg_id}
+
+
+@router.post("/{conv_id}/summarize")
+async def summarize(conv_id: str, bg: BackgroundTasks):
+    """Trigger async summarization of a conversation into the daily log."""
+    assert _db
+    if not _memory or not _memory.is_initialized():
+        return {"ok": False, "reason": "memory not initialized"}
+
+    conv = await _db.get_conversation(conv_id)
+    if not conv:
+        raise HTTPException(404, "Conversation not found")
+    messages = await _db.list_messages(conv_id)
+
+    async def _do_summarize():
+        from pineastudio.services.summarizer import summarize_conversation
+        msg_dicts = [{"role": m["role"], "content": m["content"]} for m in messages]
+        try:
+            result = await summarize_conversation(
+                msg_dicts, _memory, _ollama_host, _summarize_model,
+            )
+            if result:
+                logger.info("Summarized conversation %s: %d chars", conv_id, len(result))
+        except Exception as e:
+            logger.warning("Failed to summarize conversation %s: %s", conv_id, e)
+
+    bg.add_task(_do_summarize)
+    return {"ok": True, "status": "queued"}

@@ -1,15 +1,18 @@
 # PineaStudio — Development Design Document
 
-> 边缘端 AI 伙伴：有记忆、有个性、能看能听能说，完全本地运行。
+> 边缘端 AI 伙伴操作系统：有记忆、有个性、能看能听能说，完全本地运行。
+> 不是 AI 应用程序，是构建在 Linux 之上的**认知 OS 层**。
 
 ---
 
 ## 1. Overview
 
-PineaStudio 是一个运行在边缘硬件（NVIDIA GB10）上的**本地 AI 伙伴**。
+PineaStudio 是运行在 NVIDIA DGX Spark (GB10) 上的**本地 AI 伙伴操作系统**。
 
-它不是一个工具平台，而是一个有记忆、有人格、能语音对话的个人助理。
-底层聚合多个推理后端（Ollama / llama-server / llama.cpp-omni），自身不做推理。
+它不是一个 Web 应用，而是一个认知操作系统层——将一台边缘硬件变成一个
+有记忆、有人格、能语音对话的私人伙伴。底层聚合多个推理后端
+（Ollama / llama-server / llama.cpp-omni），自身不做推理，专注于
+**记忆管理、认知调度、交互体验和技能编排**。
 
 核心能力：
 
@@ -19,8 +22,9 @@ PineaStudio 是一个运行在边缘硬件（NVIDIA GB10）上的**本地 AI 伙
 | **后端管理** | 聚合多后端模型列表、生命周期管理、OpenAI 兼容代理 `/v1/*` | ✅ 已完成 |
 | **模型获取** | HuggingFace 搜索下载、symlink 管理 | ✅ 已完成 |
 | **系统监控** | GPU / 内存 / 磁盘 | ✅ 已完成 |
-| **记忆** | SOUL.md / USER.md / MEMORY.md + prompt 注入 | 🔨 下一步 |
-| **诞生仪式** | 首次访问时的沉浸式语音初始化 | 🔨 下一步 |
+| **记忆** | SOUL.md / USER.md / MEMORY.md + prompt 注入 + tool call 自主更新 + 对话摘要 | ✅ 已完成 |
+| **诞生仪式** | 首次访问时的沉浸式语音初始化 | ✅ 已完成 |
+| **记忆活化** | Tool call 循环 (chat + realtime) + 对话摘要 → daily 日志 | ✅ 已完成 |
 
 ---
 
@@ -235,26 +239,59 @@ class MemoryTool:
 
 记忆通过 prompt_builder 注入三个对话通道：
 
-| 通道 | 注入方式 | 说明 |
-|------|---------|------|
-| **Chat** (`/v1/chat/completions`) | 代理前 prepend system message | messages[0] 插入记忆 prompt |
-| **Realtime** (`/ws/realtime`) | `run_turn()` 替换 SYSTEM_PROMPT | 动态组装替代硬编码常量 |
-| **Omni** (`/ws/omni`) | `omni_init()` 注入 prompt | init 阶段传入记忆 prompt |
+| 通道 | 注入方式 | Tool Calling | 摘要 |
+|------|---------|-------------|------|
+| **Chat** (`/v1/chat/completions`) | prepend system message | ✅ proxy 内 tool call 循环 | ✅ 切换对话时触发 |
+| **Realtime** (`/ws/realtime`) | `run_turn()` 动态 prompt | ✅ 非流式预调用 | ✅ WS 断开时触发 |
+| **Omni** (`/ws/omni`) | `omni_init()` 注入 prompt | — | — |
 
-```python
-# routers/proxy.py — Chat 接入示例
+### 3.7 Tool Call Loop — 记忆活化
 
-async def chat_completions(request: Request):
-    body = await request.json()
-    messages = body.get("messages", [])
+LLM 在对话中通过 tool_calls 自主管理记忆：
 
-    memory_prompt = memory_manager.build_system_prompt()
-    if memory_prompt:
-        messages.insert(0, {"role": "system", "content": memory_prompt})
-
-    body["messages"] = messages
-    # ... 正常代理到后端
 ```
+用户消息 → 注入记忆 prompt + tool schema + 使用说明
+         → 非流式调用 Ollama (with tools)
+         → 检查响应:
+           ├─ 有 tool_calls → 执行 MemoryTool → 结果加入 messages → 重新调用 (最多3轮)
+           └─ 无 tool_calls
+               ├─ 第一轮就无 → 走正常流式路径 (无延迟)
+               └─ 经历过 tool 调用 → 将非流式结果转为 SSE 返回
+```
+
+关键设计：
+- **零延迟优化**：如果第一次调用就没有 tool_calls，返回 None 让调用方走原有流式路径
+- **透明**：tool 指令告诉 LLM "不要向用户提及 memory tool"，用户无感知
+- **Realtime 路径**：`_run_tool_pass()` 在流式 LLM 调用前执行，不影响 TTS 流水线
+
+### 3.8 Conversation Summarization — 对话摘要
+
+对话结束时自动生成摘要，写入 `daily/YYYY-MM-DD.md`：
+
+```
+触发时机：
+  Chat:     前端切换/新建对话 → POST /api/conversations/{id}/summarize
+  Realtime: WebSocket 断开 → _summarize_realtime() 后台任务
+
+摘要流程：
+  1. 取最近 20 条 user/assistant 消息
+  2. 如果不足 4 条，跳过
+  3. 用 LLM 生成 2-4 个 bullet points（关注事实/偏好/计划）
+  4. 如果 LLM 回复 "SKIP"，不写入
+  5. 追加到 daily/YYYY-MM-DD.md（带时间戳 ### HH:MM）
+```
+
+daily 日志格式：
+```markdown
+### 14:30
+- 用户提到下周要出差去上海
+- 讨论了 Rust 学习计划，用户偏好视频教程
+
+### 16:45
+- 帮用户写了一封商务邮件回复
+```
+
+这些摘要在下次对话时通过 `build_system_prompt()` 自动注入（读取当天 daily）。
 
 ### 3.7 对话结束摘要
 
@@ -1134,5 +1171,87 @@ typescript, vite
 
 ---
 
+## 19. Agent OS 架构视角
+
+> PineaStudio 不是跑在 Linux 上的一个应用，而是构建在 Linux 之上的**认知操作系统层**。
+
+### 19.1 五层架构
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  Layer 5: Interaction                                            │
+│  语音 (ASR→LLM→TTS) / 光球视觉反馈 / 文字 / 多通道               │
+│  当前：Web (语音+文字)    目标：唤醒词+推送+移动端                  │
+├──────────────────────────────────────────────────────────────────┤
+│  Layer 4: Agent (技能/工具)                                      │
+│  Tool Registry / MCP Connectors / 代码沙箱                      │
+│  当前：memory tool         目标：日历/天气/邮件/智能家居/生图       │
+├──────────────────────────────────────────────────────────────────┤
+│  Layer 3: Cognitive (认知)                                       │
+│  MemoryManager / MemoryTool / Summarizer / (Heartbeat/Dream)    │
+│  当前：记忆注入+tool call+摘要  目标：沉思循环+晨报+梦境整理       │
+├──────────────────────────────────────────────────────────────────┤
+│  Layer 2: Inference (推理)                                       │
+│  BackendManager / Model Router / Context Window Mgmt             │
+│  当前：多后端路由           目标：VRAM感知调度+模型按需加载/卸载    │
+├──────────────────────────────────────────────────────────────────┤
+│  Layer 1: Hardware Abstraction                                   │
+│  GPU(Blackwell) / 128GB Unified Mem / Mic / Speaker / Camera     │
+│  当前：ASR+TTS+MiniCPM-o   目标：唤醒词检测+环境音+时间感知       │
+└──────────────────────────────────────────────────────────────────┘
+               ↓ 运行在 ↓
+        DGX OS (Ubuntu Linux)
+```
+
+### 19.2 OS 类比
+
+| 传统 OS 概念 | PineaStudio Agent OS 对应 |
+|-------------|-------------------------|
+| Kernel | LLM 推理引擎 (Ollama/llama.cpp) |
+| File System | 记忆系统 (SOUL/USER/MEMORY/daily/) |
+| Process Scheduler | 注意力调度 (什么时候主动说话/什么时候安静) |
+| System Calls | Tool/MCP 接口 (memory, future: calendar, weather...) |
+| Shell / UI | 语音 + 光球 + Web Dashboard |
+| Boot Sequence | 诞生仪式 (首次) / 晨间问候 (日常) |
+| Cron Jobs | Heartbeat (定时检查) + Dream Cycle (每晚记忆整理) |
+| Virtual Memory | Context Window 管理 (冻结快照 + 按需召回) |
+| Device Drivers | ASR / TTS / Camera 服务 |
+| User Profile | USER.md (AI 自主维护的用户画像) |
+
+### 19.3 交互设计原则
+
+```
+1. 语音优先，屏幕辅助
+   主交互是语音。屏幕用于光球状态、文字记录、偶尔的图片/代码。
+   不需要复杂 GUI — 助理不是软件，是伙伴。
+
+2. 始终可达
+   设备就在桌上，随时可以说话。
+   Web UI 是管理/配置入口，不是主要交互界面。
+
+3. 主动而非被动
+   助理会主动说话——提醒、问候、分享发现。
+   通过学习用户习惯调整频率，不烦人。
+
+4. 记忆是连续的
+   不存在"新对话"的概念。所有对话都是同一段关系的延续。
+   每次对话结束不是"关闭"，而是"暂时安静"。
+
+5. 上下文 > 模型大小
+   同样的 7B 模型 + 完美的上下文 >>> 70B 模型 + 零上下文。
+   竞争力在于给模型最好的上下文，不在用最大的模型。
+```
+
+### 19.4 Phase 3 路线图 — Agent OS 化
+
+| 优先级 | 模块 | 内容 |
+|--------|------|------|
+| P5 | Contemplation Loop | Heartbeat (每小时) + Dream Cycle (每晚) + Morning Brief |
+| P6 | 技能系统 | Tool Registry + MCP connectors + 代码沙箱 |
+| P7 | 多通道 | 唤醒词检测 + 长连接 + Telegram bot |
+| P8 | 环境感知 | 时间感知 + 摄像头环境 + 网络感知 |
+
+---
+
 *Created: 2026-04-10*
-*Updated: 2026-04-13 — 记忆系统 + 诞生仪式 + UI 三层导航重构*
+*Updated: 2026-04-13 — Agent OS 架构 + 交互设计 + Phase 3 路线图*

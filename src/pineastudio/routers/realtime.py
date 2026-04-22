@@ -17,6 +17,7 @@ from starlette.websockets import WebSocketState
 
 from pineastudio.services.asr import ASRUnavailableError, get_asr
 from pineastudio.services.memory_manager import MemoryManager
+from pineastudio.services.memory_tool import MemoryTool, TOOL_SCHEMA
 from pineastudio.services.tts_service import TTSUnavailableError, get_tts
 
 logger = logging.getLogger(__name__)
@@ -38,12 +39,16 @@ MAX_HISTORY = 20
 SENTENCE_FLUSH_CHARS = 220
 
 _memory: MemoryManager | None = None
+_tool: MemoryTool | None = None
 _prefs: "Preferences | None" = None
+
+MAX_TOOL_ROUNDS = 2
 
 
 def init_realtime_memory(mm: MemoryManager) -> None:
-    global _memory
+    global _memory, _tool
     _memory = mm
+    _tool = MemoryTool(mm)
 
 
 def init_realtime_prefs(prefs: "Preferences") -> None:
@@ -145,6 +150,86 @@ async def _ollama_stream(text: str, image_b64: str, history: list[dict],
     raise NotImplementedError  # placeholder, real implementation below
 
 
+async def _summarize_realtime(conversation: list[dict]) -> None:
+    """Summarize a realtime voice conversation and write to daily log."""
+    try:
+        from pineastudio.services.summarizer import summarize_conversation
+        await summarize_conversation(
+            conversation, _memory,
+            ollama_host=_rt_ollama_host(),
+            model=_rt_model(),
+        )
+    except Exception as e:
+        logger.warning("Realtime summarization failed: %s", e)
+
+
+async def _run_tool_pass(msgs: list[dict], state: SessionState) -> list[dict]:
+    """Non-streaming tool-call loop. Returns updated messages list."""
+    assert _tool is not None
+    model = _rt_model()
+    host = _rt_ollama_host()
+
+    MEMORY_HINT = (
+        "\n\nYou have a `memory` tool to persist important information. "
+        "Use it silently when the user shares preferences, facts, or plans. "
+        "Do NOT mention the tool to the user."
+    )
+    tool_msgs = list(msgs)
+    if tool_msgs and tool_msgs[0].get("role") == "system":
+        tool_msgs[0] = {**tool_msgs[0], "content": tool_msgs[0]["content"] + MEMORY_HINT}
+
+    tools_payload = [{
+        "type": "function",
+        "function": TOOL_SCHEMA["function"],
+    }]
+
+    for round_i in range(MAX_TOOL_ROUNDS):
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.post(
+                    f"{host}/api/chat",
+                    json={"model": model, "messages": tool_msgs, "stream": False,
+                          "tools": tools_payload, "options": {"num_predict": 256}},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+        except Exception as e:
+            logger.warning("Tool pass call failed: %s", e)
+            break
+
+        msg = data.get("message", {})
+        tool_calls = msg.get("tool_calls")
+
+        if not tool_calls:
+            break
+
+        logger.info("Realtime tool call round %d: %d call(s)", round_i + 1, len(tool_calls))
+        tool_msgs.append(msg)
+
+        for tc in tool_calls:
+            func = tc.get("function", {})
+            name = func.get("name", "")
+            if name != "memory":
+                tool_msgs.append({"role": "tool", "content": f"Error: unknown tool '{name}'"})
+                continue
+            try:
+                args = func.get("arguments", {})
+                if isinstance(args, str):
+                    args = json.loads(args)
+            except (json.JSONDecodeError, TypeError):
+                args = {}
+            result = _tool.execute(
+                action=args.get("action", ""),
+                file=args.get("file", ""),
+                content=args.get("content", ""),
+                old_content=args.get("old_content", ""),
+            )
+            logger.info("Realtime tool result: %s", result[:100])
+            tool_msgs.append({"role": "tool", "content": result})
+
+    return msgs
+
+
 async def run_turn(ws: WebSocket, state: SessionState, *,
                    audio_b64: str | None = None, image_b64: str | None = None,
                    text_input: str | None = None):
@@ -175,7 +260,7 @@ async def run_turn(ws: WebSocket, state: SessionState, *,
 
         await _send(ws, {"type": "text", "transcription": user_text})
 
-        # 2. LLM streaming via Ollama
+        # 2. LLM via Ollama (with optional tool-call pre-pass)
         await _send(ws, {"type": "status", "phase": "thinking"})
 
         system_prompt = _get_system_prompt(state.mode)
@@ -185,6 +270,10 @@ async def run_turn(ws: WebSocket, state: SessionState, *,
         if image_b64:
             user_msg["images"] = [image_b64]
         msgs.append(user_msg)
+
+        # Tool-call pre-pass (non-streaming) — only in chat mode with memory
+        if state.mode == "chat" and _tool and _memory and _memory.is_initialized():
+            msgs = await _run_tool_pass(msgs, state)
 
         t0 = time.time()
         tts_t0: float | None = None
@@ -377,3 +466,5 @@ async def realtime_ws(ws: WebSocket):
         state.cancel_current()
         if state.active_task and not state.active_task.done():
             state.active_task.cancel()
+        if state.conversation and _memory and _memory.is_initialized() and state.mode == "chat":
+            asyncio.create_task(_summarize_realtime(state.conversation))

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import {
   MessageCircle, Brain, Mic, Radio, FlaskConical, Box, Cpu, Settings,
-  ChevronDown, Sparkles,
+  ChevronDown, Sparkles, Film,
 } from 'lucide-react';
 
 const ASSISTANT = [
@@ -13,6 +13,7 @@ const ASSISTANT = [
 const SHOWCASE = [
   { to: '/showcase/omni', label: 'Omni', icon: Mic },
   { to: '/showcase/realtime', label: 'Realtime', icon: Radio },
+  { to: '/showcase/video', label: '视频生成', icon: Film },
 ] as const;
 
 const STUDIO = [
